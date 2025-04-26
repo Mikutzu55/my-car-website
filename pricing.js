@@ -8,12 +8,18 @@ import {
   FaAward,
   FaShieldAlt,
   FaSyncAlt,
+  FaBrain,
+  FaCode,
+  FaHeadset,
+  FaFileExport,
+  FaSearch,
+  FaSearchDollar,
+  FaBolt,
+  FaTags,
 } from 'react-icons/fa';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { auth, createCheckoutSession } from './firebase'; // Import from your firebase.js
-import { loadStripe } from '@stripe/stripe-js';
-
-const stripePromise = loadStripe(process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY);
+import { auth } from './firebase'; // Import from your firebase.js
+import { redirectToCheckout } from './stripe'; // Import from your stripe.js
 
 const Pricing = ({ isEmbedded }) => {
   const navigate = useNavigate();
@@ -27,6 +33,7 @@ const Pricing = ({ isEmbedded }) => {
   const isInsideUserAccount =
     isEmbedded || location.pathname.includes('account');
 
+  // Define plans with detailed metadata
   const plans = {
     premium: [
       {
@@ -43,7 +50,7 @@ const Pricing = ({ isEmbedded }) => {
         bestValue: false,
         membershipType: 'premium',
         durationDays: 30, // 1 month access
-        priceId: 'price_1RFgsEB084qIp5RaobF4Vcol',
+        priceId: 'price_1RFgsEB084qIp5RaobF4Vcol', // Ensure this is your actual price ID
       },
       {
         id: '5_searches',
@@ -60,7 +67,7 @@ const Pricing = ({ isEmbedded }) => {
         bestValue: true,
         membershipType: 'premium',
         durationDays: 60, // 2 months access
-        priceId: 'price_2OsXXXXXXXXXXXXXXXXXXXXX',
+        priceId: 'price_2OsXXXXXXXXXXXXXXXXXXXXX', // Replace with your actual price ID
       },
       {
         id: '8_searches',
@@ -77,7 +84,7 @@ const Pricing = ({ isEmbedded }) => {
         bestValue: false,
         membershipType: 'premium',
         durationDays: 90, // 3 months access
-        priceId: 'price_3OsXXXXXXXXXXXXXXXXXXXXX',
+        priceId: 'price_3OsXXXXXXXXXXXXXXXXXXXXX', // Replace with your actual price ID
       },
     ],
     business: [
@@ -96,7 +103,7 @@ const Pricing = ({ isEmbedded }) => {
         bestValue: false,
         membershipType: 'business',
         durationDays: 180, // 6 months access
-        priceId: 'price_4OsXXXXXXXXXXXXXXXXXXXXX',
+        priceId: 'price_4OsXXXXXXXXXXXXXXXXXXXXX', // Replace with your actual price ID
       },
       {
         id: '50_searches',
@@ -113,7 +120,7 @@ const Pricing = ({ isEmbedded }) => {
         bestValue: true,
         membershipType: 'business',
         durationDays: 270, // 9 months access
-        priceId: 'price_5OsXXXXXXXXXXXXXXXXXXXXX',
+        priceId: 'price_5OsXXXXXXXXXXXXXXXXXXXXX', // Replace with your actual price ID
       },
       {
         id: '100_searches',
@@ -130,7 +137,7 @@ const Pricing = ({ isEmbedded }) => {
         bestValue: false,
         membershipType: 'business',
         durationDays: 365, // 12 months access
-        priceId: 'price_6OsXXXXXXXXXXXXXXXXXXXXX',
+        priceId: 'price_6OsXXXXXXXXXXXXXXXXXXXXX', // Replace with your actual price ID
       },
     ],
   };
@@ -149,45 +156,40 @@ const Pricing = ({ isEmbedded }) => {
         `Initiating checkout for plan ${plan.id} with priceId ${plan.priceId}`
       );
 
+      // Success and cancel URLs
+      const success_url = isInsideUserAccount
+        ? `${window.location.origin}/user-account?payment_success=true&plan=${encodeURIComponent(plan.id)}`
+        : `${window.location.origin}/user-account?payment_success=true&plan=${encodeURIComponent(plan.id)}`;
+
+      const cancel_url = isInsideUserAccount
+        ? `${window.location.origin}/user-account?payment_canceled=true`
+        : `${window.location.origin}/pricing?payment_canceled=true`;
+
       // Create checkout session with all required metadata for the webhook
-      const result = await createCheckoutSession({
+      await redirectToCheckout({
         price: plan.priceId,
-        success_url: isInsideUserAccount
-          ? `${window.location.origin}/user-account?payment_success=true&plan=${plan.id}`
-          : `${window.location.origin}/user-account?payment_success=true&plan=${plan.id}`,
-        cancel_url: isInsideUserAccount
-          ? `${window.location.origin}/user-account?payment_canceled=true`
-          : `${window.location.origin}/pricing?payment_canceled=true`,
+        success_url,
+        cancel_url,
         // Include all necessary metadata for the webhook handler
         searchCredits: plan.searches.toString(),
         productName: `${plan.name} - ${plan.searches} Searches`,
-        membershipType: plan.membershipType || subscriptionType, // Include membership type
-        durationDays: plan.durationDays.toString(), // Include membership duration
+        membershipType: plan.membershipType || subscriptionType,
+        durationDays: plan.durationDays.toString(),
+        // Duplicate important fields in metadata for redundancy
         metadata: {
           planId: plan.id,
           planName: plan.name,
+          searchCredits: plan.searches.toString(),
           searchCount: plan.searches.toString(),
+          membershipType: plan.membershipType || subscriptionType,
           membershipLevel: plan.membershipType || subscriptionType,
+          durationDays: plan.durationDays.toString(),
           validityPeriod: plan.durationDays.toString(),
         },
       });
 
-      console.log('Checkout session result:', result);
-
-      // Handle the response based on its format
-      if (result && result.url) {
-        window.location.href = result.url;
-      } else if (result && result.data && result.data.url) {
-        window.location.href = result.data.url;
-      } else if (result && result.sessionId) {
-        const stripe = await stripePromise;
-        await stripe.redirectToCheckout({
-          sessionId: result.sessionId,
-        });
-      } else {
-        console.error('Invalid checkout response:', result);
-        throw new Error('Checkout failed: Invalid response from server');
-      }
+      // Note: redirectToCheckout will navigate away from this page
+      // The code below won't execute since the page navigates
     } catch (err) {
       console.error('Payment error:', err);
       setError(`Payment error: ${err.message || 'Unknown error'}`);
@@ -199,7 +201,7 @@ const Pricing = ({ isEmbedded }) => {
   // Function to get plan duration display
   const getDurationText = (days) => {
     if (days >= 365) return `${days / 365} year access`;
-    if (days >= 30) return `${days / 30} month access`;
+    if (days >= 30) return `${Math.round(days / 30)} month access`;
     return `${days} day access`;
   };
 
@@ -379,7 +381,7 @@ const Pricing = ({ isEmbedded }) => {
             <div className="col-md-4 mb-3">
               <div className="benefit-item">
                 <div className="benefit-icon">
-                  <FaRobot />
+                  <FaBrain />
                 </div>
                 <h5>AI-Powered Analysis</h5>
                 <p className="text-muted">
@@ -532,16 +534,5 @@ const Pricing = ({ isEmbedded }) => {
   );
 };
 
-// Add missing icon imports
-import {
-  FaBrain,
-  FaCode,
-  FaFileExport,
-  FaHeadset,
-  FaSearch,
-  FaUserCircle,
-  FaSearchDollar,
-  FaBolt,
-} from 'react-icons/fa';
-
 export default Pricing;
+
