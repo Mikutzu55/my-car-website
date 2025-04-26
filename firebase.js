@@ -38,6 +38,10 @@ const functions = getFunctions(
   process.env.REACT_APP_FIREBASE_REGION || 'us-central1'
 );
 
+// Get Firebase region and project ID for API calls
+const region = process.env.REACT_APP_FIREBASE_REGION || 'us-central1';
+const projectId = process.env.REACT_APP_FIREBASE_PROJECT_ID;
+
 // Create authentication providers
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -91,6 +95,79 @@ onAuthStateChanged(auth, async (user) => {
 });
 
 /**
+ * Helper function to make authenticated HTTP API calls to Firebase Functions
+ * @param {string} endpoint The API endpoint to call (without region/project)
+ * @param {string} method HTTP method to use (GET, POST, etc.)
+ * @param {Object} [body] Request body (for POST/PUT)
+ * @returns {Promise<any>} API response data
+ */
+const callFunctionApi = async (endpoint, method = 'GET', body = null) => {
+  if (!auth.currentUser) {
+    throw new Error('User must be logged in');
+  }
+
+  const idToken = await auth.currentUser.getIdToken();
+
+  const headers = {
+    Authorization: `Bearer ${idToken}`,
+    'Content-Type': 'application/json',
+    Origin: window.location.origin,
+  };
+
+  const options = {
+    method,
+    headers,
+    credentials: 'same-origin',
+    mode: 'cors',
+  };
+
+  if (body && (method === 'POST' || method === 'PUT')) {
+    options.body = JSON.stringify(body);
+  }
+
+  const response = await fetch(
+    `https://${region}-${projectId}.cloudfunctions.net/${endpoint}`,
+    options
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `API call failed: ${response.status} ${response.statusText}`
+    );
+  }
+
+  return await response.json();
+};
+
+/**
+ * Checks if the API is accessible with a test call to the status endpoint
+ * @returns {Promise<boolean>} True if the API is accessible
+ */
+export const checkApiStatus = async () => {
+  try {
+    const response = await fetch(
+      `https://${region}-${projectId}.cloudfunctions.net/status`
+    );
+
+    if (!response.ok) {
+      console.warn(
+        'API status check failed:',
+        response.status,
+        response.statusText
+      );
+      return false;
+    }
+
+    const data = await response.json();
+    console.log('API status check successful:', data);
+    return true;
+  } catch (error) {
+    console.error('API status check error:', error);
+    return false;
+  }
+};
+
+/**
  * Creates a checkout session with Stripe
  * @param {Object} data Configuration data for the checkout session
  * @param {string} data.price Stripe price ID
@@ -106,6 +183,10 @@ export const createCheckoutSession = async (data) => {
       price: data.price,
       success_url: data.success_url,
       cancel_url: data.cancel_url,
+      searchCredits: data.searchCredits || data.metadata?.searchCredits,
+      productName: data.productName || data.metadata?.productName,
+      membershipType: data.membershipType || data.metadata?.membershipType,
+      durationDays: data.durationDays || data.metadata?.durationDays,
       metadata: data.metadata,
     });
 
@@ -113,56 +194,38 @@ export const createCheckoutSession = async (data) => {
       throw new Error('User must be logged in to create a checkout session');
     }
 
-    // First try using the wrapper function which handles CORS
+    // Prepare the metadata with all necessary fields
+    const completeMetadata = {
+      searchCredits:
+        data.searchCredits?.toString() ||
+        data.metadata?.searchCredits?.toString() ||
+        '0',
+      productName:
+        data.productName || data.metadata?.productName || 'VIN Search Credits',
+      membershipType:
+        data.membershipType || data.metadata?.membershipType || 'free',
+      durationDays:
+        data.durationDays?.toString() ||
+        data.metadata?.durationDays?.toString() ||
+        '365',
+      ...data.metadata,
+    };
+
+    // First try using the HTTP API wrapper
     try {
-      // Get current user's ID token for authentication
-      const idToken = await auth.currentUser.getIdToken();
+      const requestBody = {
+        price: data.price,
+        mode: 'payment',
+        success_url: data.success_url,
+        cancel_url: data.cancel_url,
+        metadata: completeMetadata,
+      };
 
-      const region = process.env.REACT_APP_FIREBASE_REGION || 'us-central1';
-      const projectId = process.env.REACT_APP_FIREBASE_PROJECT_ID;
-
-      if (!projectId) {
-        throw new Error('Firebase project ID not configured');
-      }
-
-      // Call the HTTP endpoint directly with appropriate headers
-      const response = await fetch(
-        `https://${region}-${projectId}.cloudfunctions.net/createCheckoutSessionWrapper`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${idToken}`,
-          },
-          body: JSON.stringify({
-            price: data.price,
-            mode: 'payment',
-            success_url: data.success_url,
-            cancel_url: data.cancel_url,
-            metadata: {
-              searchCredits:
-                data.searchCredits || data.metadata?.searchCredits || '0',
-              productName:
-                data.productName ||
-                data.metadata?.productName ||
-                'VIN Search Credits',
-              membershipType:
-                data.membershipType || data.metadata?.membershipType || 'free',
-              durationDays:
-                data.durationDays || data.metadata?.durationDays || '365',
-            },
-          }),
-        }
+      const result = await callFunctionApi(
+        'createCheckoutSessionWrapper',
+        'POST',
+        requestBody
       );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(
-          `HTTP error! Status: ${response.status}, Details: ${errorText}`
-        );
-      }
-
-      const result = await response.json();
       console.log('Checkout session created successfully via HTTP:', result);
       return result;
     } catch (error) {
@@ -185,13 +248,14 @@ export const createCheckoutSession = async (data) => {
         productName: data.productName || data.metadata?.productName,
         membershipType: data.membershipType || data.metadata?.membershipType,
         durationDays: data.durationDays || data.metadata?.durationDays,
+        metadata: data.metadata || {},
       });
 
       console.log(
         'Checkout session created successfully via callable function:',
         result
       );
-      return result;
+      return result.data;
     }
   } catch (error) {
     console.error('Failed to create checkout session:', error);
@@ -211,29 +275,8 @@ export const getPaymentDetails = async () => {
 
     // First try using the wrapper function which handles CORS
     try {
-      // Get current user's ID token for authentication
-      const idToken = await auth.currentUser.getIdToken();
-
-      const region = process.env.REACT_APP_FIREBASE_REGION || 'us-central1';
-      const projectId = process.env.REACT_APP_FIREBASE_PROJECT_ID;
-
-      // Call the HTTP endpoint directly with appropriate headers
-      const response = await fetch(
-        `https://${region}-${projectId}.cloudfunctions.net/getPaymentDetailsApi`,
-        {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${idToken}`,
-          },
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await callFunctionApi('getPaymentDetailsApi');
+      console.log('Payment details fetched successfully via HTTP:', data);
       return { data };
     } catch (error) {
       console.warn(
@@ -247,7 +290,12 @@ export const getPaymentDetails = async () => {
         'getPaymentDetails'
       );
 
-      return await getPaymentDetailsFunc();
+      const result = await getPaymentDetailsFunc();
+      console.log(
+        'Payment details fetched successfully via callable function:',
+        result
+      );
+      return result;
     }
   } catch (error) {
     console.error('Failed to get payment details:', error);
@@ -270,7 +318,9 @@ export const createPortalSession = async () => {
       'createPortalSession'
     );
 
-    return await createPortalSessionFunc();
+    const result = await createPortalSessionFunc();
+    console.log('Portal session created:', result);
+    return result;
   } catch (error) {
     console.error('Failed to create portal session:', error);
     throw error;
@@ -294,6 +344,7 @@ export const incrementSearchCount = async () => {
     );
 
     const result = await incrementSearchCountFunc();
+    console.log('Search count incremented:', result.data);
 
     // Update local cache
     const userRef = doc(db, 'users', auth.currentUser.uid);
@@ -325,21 +376,37 @@ export const getSearchesUsed = async () => {
   try {
     if (!auth.currentUser) return 0;
 
-    // Try to get from cloud function first for most up-to-date value
+    // First try to use the HTTP API directly
     try {
-      const getSearchesUsedFunc = httpsCallable(functions, 'getSearchesUsed');
-      const result = await getSearchesUsedFunc();
-      return result.data || 0;
+      const searchesUsed = await callFunctionApi('getSearchesUsedApi');
+      console.log('Searches used fetched via HTTP:', searchesUsed);
+      return searchesUsed || 0;
     } catch (error) {
       console.warn(
-        'Failed to get searches used from function, using local data:',
+        'Failed to get searches used from HTTP API, using callable function:',
         error
       );
 
-      // Fall back to local data
-      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-      if (userDoc.exists()) {
-        return userDoc.data().searchesUsed || 0;
+      // Fall back to using the callable function
+      try {
+        const getSearchesUsedFunc = httpsCallable(functions, 'getSearchesUsed');
+        const result = await getSearchesUsedFunc();
+        console.log(
+          'Searches used fetched via callable function:',
+          result.data
+        );
+        return result.data || 0;
+      } catch (funcError) {
+        console.warn(
+          'Failed to get searches used from function, using local data:',
+          funcError
+        );
+
+        // Fall back to local data
+        const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+        if (userDoc.exists()) {
+          return userDoc.data().searchesUsed || 0;
+        }
       }
     }
 
@@ -358,21 +425,34 @@ export const getSearchLimit = async () => {
   try {
     if (!auth.currentUser) return 0;
 
-    // Try to get from cloud function first for most up-to-date value
+    // First try to use the HTTP API directly
     try {
-      const getSearchLimitFunc = httpsCallable(functions, 'getSearchLimit');
-      const result = await getSearchLimitFunc();
-      return result.data || 0;
+      const searchLimit = await callFunctionApi('getSearchLimitApi');
+      console.log('Search limit fetched via HTTP:', searchLimit);
+      return searchLimit || 0;
     } catch (error) {
       console.warn(
-        'Failed to get search limit from function, using local data:',
+        'Failed to get search limit from HTTP API, using callable function:',
         error
       );
 
-      // Fall back to local data
-      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-      if (userDoc.exists()) {
-        return userDoc.data().searchLimit || 0;
+      // Fall back to using the callable function
+      try {
+        const getSearchLimitFunc = httpsCallable(functions, 'getSearchLimit');
+        const result = await getSearchLimitFunc();
+        console.log('Search limit fetched via callable function:', result.data);
+        return result.data || 0;
+      } catch (funcError) {
+        console.warn(
+          'Failed to get search limit from function, using local data:',
+          funcError
+        );
+
+        // Fall back to local data as a last resort
+        const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+        if (userDoc.exists()) {
+          return userDoc.data().searchLimit || 0;
+        }
       }
     }
 
@@ -393,11 +473,23 @@ export const checkSearchCredits = async () => {
       return { canSearch: false, remainingSearches: 0 };
     }
 
-    // Call the cloud function to get comprehensive search credit info
-    const checkCreditsFunc = httpsCallable(functions, 'checkSearchCredits');
-    const result = await checkCreditsFunc();
+    // First try HTTP API
+    try {
+      const creditInfo = await callFunctionApi('checkSearchCreditsApi');
+      console.log('Search credits checked via HTTP API:', creditInfo);
+      return creditInfo;
+    } catch (error) {
+      console.warn(
+        'HTTP API failed for search credits, using callable function:',
+        error
+      );
 
-    return result.data;
+      // Fall back to callable function
+      const checkCreditsFunc = httpsCallable(functions, 'checkSearchCredits');
+      const result = await checkCreditsFunc();
+      console.log('Search credits checked via callable function:', result.data);
+      return result.data;
+    }
   } catch (error) {
     console.error('Failed to check search credits:', error);
     return { canSearch: false, remainingSearches: 0, error: error.message };
@@ -489,9 +581,30 @@ export const resetSearchCount = async () => {
     }
 
     const resetFunc = httpsCallable(functions, 'resetSearchCount');
-    return await resetFunc();
+    const result = await resetFunc();
+    console.log('Search count reset:', result.data);
+    return result.data;
   } catch (error) {
     console.error('Failed to reset search count:', error);
+    throw error;
+  }
+};
+
+/**
+ * Debug function to add search credits directly (for testing only)
+ */
+export const debugAddSearchCredits = async (credits = 1) => {
+  try {
+    if (!auth.currentUser) {
+      throw new Error('User must be logged in');
+    }
+
+    const addCreditsFunc = httpsCallable(functions, 'debugAddSearchCredits');
+    const result = await addCreditsFunc({ creditsToAdd: credits });
+    console.log('Debug search credits added:', result.data);
+    return result.data;
+  } catch (error) {
+    console.error('Failed to add debug search credits:', error);
     throw error;
   }
 };
@@ -508,3 +621,4 @@ export {
   signInWithPopup,
   onAuthStateChanged,
 };
+
