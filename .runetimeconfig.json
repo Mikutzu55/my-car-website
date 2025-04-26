@@ -1,0 +1,10 @@
+{
+  "app": {
+    "url": "http://localhost:3000"
+  },
+  "stripe": {
+    "webhook_secret": "whsec_UoG9LIjJ9k9XoL9eZnYmtS1h3sbqwN01",
+    "secret_key": "sk_test_51RFgNhB084qIp5RahU4wh7p8pOvXsV6qgsnqcA401kdQYCprHV4TtpBKGNrDVx2ucS8zdaVNL1xcQO1lAlnP7qb300o3eBY2Cr",
+    "secret": "sk_test_51RFgNhB084qIp5RahU4wh7p8pOvXsV6qgsnqcA401kdQYCprHV4TtpBKGNrDVx2ucS8zdaVNL1xcQO1lAlnP7qb300o3eBY2Cr"
+  }
+}
