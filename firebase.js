@@ -1,0 +1,510 @@
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  OAuthProvider,
+  signInWithPopup,
+  onAuthStateChanged,
+} from 'firebase/auth';
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  serverTimestamp,
+} from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+
+// Your Firebase configuration
+const firebaseConfig = {
+  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.REACT_APP_FIREBASE_APP_ID,
+  measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID,
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+const functions = getFunctions(
+  app,
+  process.env.REACT_APP_FIREBASE_REGION || 'us-central1'
+);
+
+// Create authentication providers
+const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+const appleProvider = new OAuthProvider('apple.com');
+appleProvider.addScope('email');
+appleProvider.addScope('name');
+
+// Initialize user when they authenticate
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    const userRef = doc(db, 'users', user.uid);
+    const docSnap = await getDoc(userRef);
+
+    // Check if the user document already exists
+    if (!docSnap.exists()) {
+      try {
+        // Create a new user document with the updated structure including AI chat access
+        await setDoc(userRef, {
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName || '',
+          photoURL: user.photoURL || '',
+          phone: user.phoneNumber || '',
+          membership: 'free', // Default membership
+          searchLimit: 5, // Free users get 5 searches
+          searchesUsed: 0, // No searches used yet
+          expirationDate: null, // No expiration date
+          paymentId: null, // No payment ID
+          lastSearchTime: null, // Track when user last performed a search (for AI chat access)
+          chatHistory: [], // Store chat history with AI
+          createdAt: serverTimestamp(), // Account creation date
+          lastLogin: serverTimestamp(), // Last login timestamp
+        });
+        console.log('New user document created for:', user.uid);
+      } catch (error) {
+        console.error('Error creating user document:', error);
+      }
+    } else {
+      // Update last login timestamp
+      try {
+        await updateDoc(userRef, {
+          lastLogin: serverTimestamp(),
+        });
+        console.log('User login timestamp updated for:', user.uid);
+      } catch (error) {
+        console.error('Error updating user login timestamp:', error);
+      }
+    }
+  }
+});
+
+/**
+ * Creates a checkout session with Stripe
+ * @param {Object} data Configuration data for the checkout session
+ * @param {string} data.price Stripe price ID
+ * @param {string} data.success_url URL to redirect to on successful payment
+ * @param {string} data.cancel_url URL to redirect to on canceled payment
+ * @param {Object} data.metadata Additional metadata for the checkout session
+ * @returns {Promise<{url: string}|{sessionId: string}>} Checkout session data
+ */
+export const createCheckoutSession = async (data) => {
+  try {
+    // Log the data being sent to help debug issues
+    console.log('Creating checkout session with data:', {
+      price: data.price,
+      success_url: data.success_url,
+      cancel_url: data.cancel_url,
+      metadata: data.metadata,
+    });
+
+    if (!auth.currentUser) {
+      throw new Error('User must be logged in to create a checkout session');
+    }
+
+    // First try using the wrapper function which handles CORS
+    try {
+      // Get current user's ID token for authentication
+      const idToken = await auth.currentUser.getIdToken();
+
+      const region = process.env.REACT_APP_FIREBASE_REGION || 'us-central1';
+      const projectId = process.env.REACT_APP_FIREBASE_PROJECT_ID;
+
+      if (!projectId) {
+        throw new Error('Firebase project ID not configured');
+      }
+
+      // Call the HTTP endpoint directly with appropriate headers
+      const response = await fetch(
+        `https://${region}-${projectId}.cloudfunctions.net/createCheckoutSessionWrapper`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            price: data.price,
+            mode: 'payment',
+            success_url: data.success_url,
+            cancel_url: data.cancel_url,
+            metadata: {
+              searchCredits:
+                data.searchCredits || data.metadata?.searchCredits || '0',
+              productName:
+                data.productName ||
+                data.metadata?.productName ||
+                'VIN Search Credits',
+              membershipType:
+                data.membershipType || data.metadata?.membershipType || 'free',
+              durationDays:
+                data.durationDays || data.metadata?.durationDays || '365',
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `HTTP error! Status: ${response.status}, Details: ${errorText}`
+        );
+      }
+
+      const result = await response.json();
+      console.log('Checkout session created successfully via HTTP:', result);
+      return result;
+    } catch (error) {
+      console.warn(
+        'Direct HTTP call failed, falling back to callable function:',
+        error
+      );
+
+      // Fallback to using the callable function
+      const checkoutSessionFunc = httpsCallable(
+        functions,
+        'createCheckoutSession'
+      );
+
+      const result = await checkoutSessionFunc({
+        price: data.price,
+        successUrl: data.success_url,
+        cancelUrl: data.cancel_url,
+        searchCredits: data.searchCredits || data.metadata?.searchCredits,
+        productName: data.productName || data.metadata?.productName,
+        membershipType: data.membershipType || data.metadata?.membershipType,
+        durationDays: data.durationDays || data.metadata?.durationDays,
+      });
+
+      console.log(
+        'Checkout session created successfully via callable function:',
+        result
+      );
+      return result;
+    }
+  } catch (error) {
+    console.error('Failed to create checkout session:', error);
+    throw error;
+  }
+};
+
+/**
+ * Gets payment details for the current user
+ * @returns {Promise<Object>} Payment details including search limits and history
+ */
+export const getPaymentDetails = async () => {
+  try {
+    if (!auth.currentUser) {
+      throw new Error('User must be logged in to get payment details');
+    }
+
+    // First try using the wrapper function which handles CORS
+    try {
+      // Get current user's ID token for authentication
+      const idToken = await auth.currentUser.getIdToken();
+
+      const region = process.env.REACT_APP_FIREBASE_REGION || 'us-central1';
+      const projectId = process.env.REACT_APP_FIREBASE_PROJECT_ID;
+
+      // Call the HTTP endpoint directly with appropriate headers
+      const response = await fetch(
+        `https://${region}-${projectId}.cloudfunctions.net/getPaymentDetailsApi`,
+        {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return { data };
+    } catch (error) {
+      console.warn(
+        'Direct HTTP call failed, falling back to callable function:',
+        error
+      );
+
+      // Fallback to using the callable function
+      const getPaymentDetailsFunc = httpsCallable(
+        functions,
+        'getPaymentDetails'
+      );
+
+      return await getPaymentDetailsFunc();
+    }
+  } catch (error) {
+    console.error('Failed to get payment details:', error);
+    throw error;
+  }
+};
+
+/**
+ * Creates a Stripe customer portal session
+ * @returns {Promise<{url: string}>} Portal session URL
+ */
+export const createPortalSession = async () => {
+  try {
+    if (!auth.currentUser) {
+      throw new Error('User must be logged in to access customer portal');
+    }
+
+    const createPortalSessionFunc = httpsCallable(
+      functions,
+      'createPortalSession'
+    );
+
+    return await createPortalSessionFunc();
+  } catch (error) {
+    console.error('Failed to create portal session:', error);
+    throw error;
+  }
+};
+
+/**
+ * Increments the user's search count and updates last search time
+ * @returns {Promise<{searchesUsed: number, searchLimit: number, remainingSearches: number}>} Updated search counts
+ */
+export const incrementSearchCount = async () => {
+  try {
+    if (!auth.currentUser) {
+      throw new Error('User must be logged in to increment search count');
+    }
+
+    // Call the cloud function first to validate search limits
+    const incrementSearchCountFunc = httpsCallable(
+      functions,
+      'incrementSearchCount'
+    );
+
+    const result = await incrementSearchCountFunc();
+
+    // Update local cache
+    const userRef = doc(db, 'users', auth.currentUser.uid);
+    await updateDoc(userRef, {
+      searchesUsed: result.data.searchesUsed,
+      lastSearchTime: serverTimestamp(), // This enables AI chat access for 24 hours
+    });
+
+    return result.data;
+  } catch (error) {
+    console.error('Failed to increment search count:', error);
+
+    // If error is about exceeding search limit, handle gracefully
+    if (error.code === 'functions/resource-exhausted') {
+      throw new Error(
+        'Search limit exceeded. Please purchase more search credits.'
+      );
+    }
+
+    throw error;
+  }
+};
+
+/**
+ * Gets the current user's searches used count
+ * @returns {Promise<number>} Number of searches used
+ */
+export const getSearchesUsed = async () => {
+  try {
+    if (!auth.currentUser) return 0;
+
+    // Try to get from cloud function first for most up-to-date value
+    try {
+      const getSearchesUsedFunc = httpsCallable(functions, 'getSearchesUsed');
+      const result = await getSearchesUsedFunc();
+      return result.data || 0;
+    } catch (error) {
+      console.warn(
+        'Failed to get searches used from function, using local data:',
+        error
+      );
+
+      // Fall back to local data
+      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+      if (userDoc.exists()) {
+        return userDoc.data().searchesUsed || 0;
+      }
+    }
+
+    return 0;
+  } catch (error) {
+    console.error('Failed to get searches used:', error);
+    return 0;
+  }
+};
+
+/**
+ * Gets the user's search limit
+ * @returns {Promise<number>} Search limit
+ */
+export const getSearchLimit = async () => {
+  try {
+    if (!auth.currentUser) return 0;
+
+    // Try to get from cloud function first for most up-to-date value
+    try {
+      const getSearchLimitFunc = httpsCallable(functions, 'getSearchLimit');
+      const result = await getSearchLimitFunc();
+      return result.data || 0;
+    } catch (error) {
+      console.warn(
+        'Failed to get search limit from function, using local data:',
+        error
+      );
+
+      // Fall back to local data
+      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+      if (userDoc.exists()) {
+        return userDoc.data().searchLimit || 0;
+      }
+    }
+
+    return 0;
+  } catch (error) {
+    console.error('Failed to get search limit:', error);
+    return 0;
+  }
+};
+
+/**
+ * Checks if the user has remaining searches available
+ * @returns {Promise<Object>} Search credit details including if user can search
+ */
+export const checkSearchCredits = async () => {
+  try {
+    if (!auth.currentUser) {
+      return { canSearch: false, remainingSearches: 0 };
+    }
+
+    // Call the cloud function to get comprehensive search credit info
+    const checkCreditsFunc = httpsCallable(functions, 'checkSearchCredits');
+    const result = await checkCreditsFunc();
+
+    return result.data;
+  } catch (error) {
+    console.error('Failed to check search credits:', error);
+    return { canSearch: false, remainingSearches: 0, error: error.message };
+  }
+};
+
+/**
+ * Checks if the user has active AI chat access
+ * @returns {Promise<boolean>} Whether user has active chat access
+ */
+export const hasActiveChatAccess = async () => {
+  try {
+    if (!auth.currentUser) return false;
+
+    const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+    if (!userDoc.exists()) return false;
+
+    const userData = userDoc.data();
+
+    // Check if user is premium/business
+    const isPremium =
+      userData.membership?.toLowerCase() === 'premium' ||
+      userData.membership?.toLowerCase() === 'business';
+    if (!isPremium) return false;
+
+    // Check if last search is within 24 hours
+    const lastSearchTime = userData.lastSearchTime?.toDate();
+    if (!lastSearchTime) return false;
+
+    const now = new Date();
+    const hoursSinceLastSearch = (now - lastSearchTime) / (1000 * 60 * 60);
+
+    return hoursSinceLastSearch <= 24;
+  } catch (error) {
+    console.error('Failed to check chat access status:', error);
+    return false;
+  }
+};
+
+/**
+ * Logs a chat interaction with the AI
+ * @param {string} userMessage User's message
+ * @param {string} aiResponse AI's response
+ * @returns {Promise<void>}
+ */
+export const logAIChat = async (userMessage, aiResponse) => {
+  try {
+    if (!auth.currentUser) return;
+
+    const userRef = doc(db, 'users', auth.currentUser.uid);
+
+    // Get the current chat history
+    const userDoc = await getDoc(userRef);
+    const userData = userDoc.data();
+    const currentChatHistory = userData.chatHistory || [];
+
+    // Add the new chat entry
+    const newChatHistory = [
+      {
+        timestamp: serverTimestamp(),
+        userMessage,
+        aiResponse,
+      },
+      ...currentChatHistory.slice(0, 49), // Keep only the 50 most recent chats
+    ];
+
+    // Update the user's chat history
+    await updateDoc(userRef, {
+      chatHistory: newChatHistory,
+    });
+  } catch (error) {
+    console.error('Failed to log AI chat:', error);
+  }
+};
+
+/**
+ * Resets user's search count (for development/testing only)
+ * @returns {Promise<Object>} Result of the operation
+ */
+export const resetSearchCount = async () => {
+  if (process.env.NODE_ENV === 'production') {
+    console.warn('resetSearchCount should not be called in production');
+    return { success: false, message: 'Not allowed in production' };
+  }
+
+  try {
+    if (!auth.currentUser) {
+      throw new Error('User must be logged in to reset search count');
+    }
+
+    const resetFunc = httpsCallable(functions, 'resetSearchCount');
+    return await resetFunc();
+  } catch (error) {
+    console.error('Failed to reset search count:', error);
+    throw error;
+  }
+};
+
+// Export all necessary functions and objects
+export {
+  app,
+  auth,
+  db,
+  storage,
+  functions,
+  googleProvider,
+  appleProvider,
+  signInWithPopup,
+  onAuthStateChanged,
+};
