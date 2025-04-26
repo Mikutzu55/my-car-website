@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Basic rules
+    match /{document=**} {
+      allow read, write: if false; // Default to denying access
+    }
+    
+    // Allow users to read and write their own data
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Allow access to Stripe Extension customer data - users can only read their own data
+    match /customers/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow read access to payment details
+      match /payments/{paymentId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+      }
+      
+      // Allow read access to checkout sessions
+      match /checkout_sessions/{sessionId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+    
+    // Allow read access to transactions for the user
+    match /transactions/{transactionId} {
+      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
+    }
+  }
+}
