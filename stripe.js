@@ -18,8 +18,8 @@ const getStripe = () => {
  * Creates a checkout session for a one-time payment
  * @param {Object} options - Checkout options
  * @param {string} options.price - The Stripe Price ID
- * @param {string} options.successUrl - URL to redirect after successful payment
- * @param {string} options.cancelUrl - URL to redirect after cancelled payment
+ * @param {string} options.success_url - URL to redirect after successful payment
+ * @param {string} options.cancel_url - URL to redirect after cancelled payment
  * @param {string} options.searchCredits - Number of search credits to add
  * @param {string} options.productName - Name of the product being purchased
  * @param {string} options.membershipType - Type of membership (free, premium, business)
@@ -35,30 +35,47 @@ export const createCheckoutSession = async (options) => {
 
     // Default success and cancel URLs if not provided
     const successUrl =
+      options.success_url ||
       options.successUrl ||
-      `${window.location.origin}/user-account?payment_success=true&plan=${options.productName || ''}`;
+      `${window.location.origin}/user-account?payment_success=true&plan=${encodeURIComponent(options.productName || '')}`;
     const cancelUrl =
+      options.cancel_url ||
       options.cancelUrl ||
       `${window.location.origin}/pricing?payment_canceled=true`;
 
-    // Create a checkout session using the Firebase Cloud Function
-    const createSession = httpsCallable(functions, 'createCheckoutSession');
+    // Prepare metadata object including all fields
+    const metadata = {
+      ...options.metadata,
+      searchCredits: options.searchCredits || '0',
+      productName: options.productName || 'VIN Search Credits',
+      membershipType: options.membershipType || 'free',
+      durationDays: options.durationDays || '365',
+      // Add any other fields you want to include
+    };
 
     console.log('Creating checkout session with options:', {
-      ...options,
+      price: options.price,
       successUrl,
       cancelUrl,
+      searchCredits: options.searchCredits,
+      productName: options.productName,
+      membershipType: options.membershipType,
+      durationDays: options.durationDays,
+      metadata,
     });
+
+    // Create a checkout session using the Firebase Cloud Function
+    const createSession = httpsCallable(functions, 'createCheckoutSession');
 
     const result = await createSession({
       price: options.price,
       successUrl,
       cancelUrl,
-      searchCredits: options.searchCredits || '0',
-      productName: options.productName || 'VIN Search Credits',
-      membershipType: options.membershipType || 'free',
-      durationDays: options.durationDays || '365',
-      metadata: options.metadata || {},
+      searchCredits: options.searchCredits,
+      productName: options.productName,
+      membershipType: options.membershipType,
+      durationDays: options.durationDays,
+      metadata,
     });
 
     console.log('Checkout session created:', result);
@@ -203,5 +220,26 @@ export const resetSearchCount = async () => {
   }
 };
 
+/**
+ * Debug function to manually add search credits (testing only)
+ * @param {number} credits - Number of credits to add
+ * @returns {Promise<Object>} Result of the operation
+ */
+export const debugAddSearchCredits = async (credits = 1) => {
+  try {
+    // Verify user is authenticated
+    if (!auth.currentUser) {
+      throw new Error('User must be logged in');
+    }
+
+    const addCredits = httpsCallable(functions, 'debugAddSearchCredits');
+    return await addCredits({ creditsToAdd: credits });
+  } catch (error) {
+    console.error('Error adding debug search credits:', error);
+    throw error;
+  }
+};
+
 // Export the getStripe function as default
 export default getStripe;
+
