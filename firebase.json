@@ -1,0 +1,88 @@
+{
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "functions": {
+    "predeploy": ["npm --prefix \"$RESOURCE_DIR\" run lint"],
+    "source": "backend/functions"
+  },
+  "hosting": {
+    "public": "build",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "source": "/api/**",
+        "function": "api"
+      },
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(js|css)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=31536000"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(jpg|jpeg|gif|png|svg|webp)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=31536000"
+          }
+        ]
+      },
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Content-Security-Policy",
+            "value": "default-src 'self'; script-src 'self' https://js.stripe.com https://applepay.cdn-apple.com 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' 'sha256-zhyeDlZTEKZvKgtxHpxj4ydFABucKb8zpjZLFzOborc=' 'sha256-leLzbVxZAzOi3vU/QL+Ol4qnwxlwA0nSPFZDP71A4Kk=' 'sha256-mQ4LZTkAl1QYJkeyaT4nVx0YDeQ9WOH9k4ajt5PFvNU=' 'sha256-B3yoUHRULn1isE4VCTQnLT04X7QKzhw+FhvpPPZfR/w='; connect-src 'self' https://api.stripe.com https://firebaseinstallations.googleapis.com https://firebasestorage.googleapis.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com; frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://applepay.cdn-apple.com; img-src 'self' data: https:; font-src 'self';"
+          },
+          {
+            "key": "X-Content-Type-Options",
+            "value": "nosniff"
+          },
+          {
+            "key": "X-Frame-Options",
+            "value": "DENY"
+          },
+          {
+            "key": "X-XSS-Protection",
+            "value": "1; mode=block"
+          }
+        ]
+      }
+    ]
+  },
+  "emulators": {
+    "auth": {
+      "port": 9099
+    },
+    "functions": {
+      "port": 5001
+    },
+    "firestore": {
+      "port": 8080
+    },
+    "hosting": {
+      "port": 5000
+    },
+    "storage": {
+      "port": 9199
+    },
+    "ui": {
+      "enabled": true
+    }
+  }
+}
